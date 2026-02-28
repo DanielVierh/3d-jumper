@@ -66,6 +66,16 @@ const JUMP_VELOCITY = 12;
 const MAX_JUMPS = 2;
 const STOMP_BOUNCE_FACTOR = 0.85;
 const ENEMY_STOMP_POINTS = 100;
+const ENEMY_SPAWN_CHANCE = 0.2;
+const GAP_CHANCE = 0.2;
+const MAX_CONSECUTIVE_GAP_SEGMENTS = 1;
+const MIN_SOLID_SEGMENTS_BETWEEN_GAPS = 2;
+const GAP_LENGTH_FACTOR = 0.55;
+const LANE_OFFSETS = [-2.2, 0, 2.2];
+const LANE_CHANGE_LERP = 0.18;
+const SWIPE_THRESHOLD_PX = 35;
+const ENEMY_LATERAL_SPEED = 0.8;
+const ENEMY_LATERAL_LIMIT = TRACK_WIDTH * 0.5 - 0.7;
 
 let velocityY = 0;
 let jumpsUsed = 0;
@@ -74,6 +84,11 @@ let score = 0;
 let speed = BASE_SPEED;
 let gameOver = false;
 let segmentCursor = -24;
+let consecutiveGapSegments = 0;
+let solidSegmentsSinceGap = MIN_SOLID_SEGMENTS_BETWEEN_GAPS;
+let currentLane = 1;
+let touchStartX = null;
+let touchStartY = null;
 const generatedUntil = { z: 115 };
 
 const distanceEl = document.getElementById("distance");
@@ -82,7 +97,28 @@ const jumpButton = document.getElementById("jumpButton");
 
 function createSegment(startZ, hasGap) {
   if (hasGap) {
-    segments.push({ start: startZ, end: startZ + SEGMENT_LENGTH, mesh: null });
+    const gapLength = SEGMENT_LENGTH * GAP_LENGTH_FACTOR;
+    const platformLength = SEGMENT_LENGTH - gapLength;
+
+    segments.push({ start: startZ, end: startZ + gapLength, mesh: null });
+
+    const trailingPlatform = new THREE.Mesh(
+      new THREE.BoxGeometry(TRACK_WIDTH, 1, platformLength),
+      groundMaterial,
+    );
+    trailingPlatform.receiveShadow = true;
+    trailingPlatform.position.set(
+      0,
+      0,
+      startZ + gapLength + platformLength / 2,
+    );
+    world.add(trailingPlatform);
+    segments.push({
+      start: startZ + gapLength,
+      end: startZ + SEGMENT_LENGTH,
+      mesh: trailingPlatform,
+    });
+
     return;
   }
 
@@ -95,13 +131,18 @@ function createSegment(startZ, hasGap) {
   world.add(mesh);
   segments.push({ start: startZ, end: startZ + SEGMENT_LENGTH, mesh });
 
-  if (Math.random() < 0.38) {
+  if (Math.random() < ENEMY_SPAWN_CHANCE) {
     const enemy = new THREE.Mesh(
       new THREE.BoxGeometry(1.2, 1.4, 1.2),
       enemyMaterial,
     );
+    const enemyLane = Math.floor(Math.random() * LANE_OFFSETS.length);
     enemy.castShadow = true;
-    enemy.position.set(0, 1.2, startZ + SEGMENT_LENGTH * 0.55);
+    enemy.position.set(
+      LANE_OFFSETS[enemyLane],
+      1.2,
+      startZ + SEGMENT_LENGTH * 0.55,
+    );
     world.add(enemy);
     enemies.push(enemy);
   }
@@ -109,7 +150,19 @@ function createSegment(startZ, hasGap) {
 
 function generateTrack() {
   while (generatedUntil.z < segmentCursor + 125) {
-    const hasGap = Math.random() < 0.24;
+    const canSpawnGap =
+      consecutiveGapSegments < MAX_CONSECUTIVE_GAP_SEGMENTS &&
+      solidSegmentsSinceGap >= MIN_SOLID_SEGMENTS_BETWEEN_GAPS;
+    const hasGap = canSpawnGap && Math.random() < GAP_CHANCE;
+
+    if (hasGap) {
+      consecutiveGapSegments += 1;
+      solidSegmentsSinceGap = 0;
+    } else {
+      consecutiveGapSegments = 0;
+      solidSegmentsSinceGap += 1;
+    }
+
     createSegment(generatedUntil.z, hasGap);
     generatedUntil.z += SEGMENT_LENGTH;
   }
@@ -149,6 +202,19 @@ function jump() {
   }
 }
 
+function moveLane(direction) {
+  if (gameOver) {
+    return;
+  }
+
+  const nextLane = THREE.MathUtils.clamp(
+    currentLane + direction,
+    0,
+    LANE_OFFSETS.length - 1,
+  );
+  currentLane = nextLane;
+}
+
 function restart() {
   gameOver = false;
   speed = BASE_SPEED;
@@ -156,8 +222,11 @@ function restart() {
   score = 0;
   velocityY = 0;
   jumpsUsed = 0;
-  player.position.set(0, 1.1, 0);
+  currentLane = 1;
+  player.position.set(LANE_OFFSETS[currentLane], 1.1, 0);
   segmentCursor = -24;
+  consecutiveGapSegments = 0;
+  solidSegmentsSinceGap = MIN_SOLID_SEGMENTS_BETWEEN_GAPS;
   generatedUntil.z = 115;
 
   for (const segment of segments) {
@@ -178,7 +247,7 @@ function restart() {
     createSegment(z, false);
   }
 
-  stateEl.textContent = "Leertaste oder Touch zum Springen";
+  stateEl.textContent = "Leertaste/Touch springen, A/D oder Swipe ausweichen";
 }
 
 function onPressInput() {
@@ -189,6 +258,18 @@ window.addEventListener("keydown", (event) => {
   if (event.code === "Space") {
     event.preventDefault();
     onPressInput();
+    return;
+  }
+
+  if (event.code === "ArrowLeft" || event.code === "KeyA") {
+    event.preventDefault();
+    moveLane(1);
+    return;
+  }
+
+  if (event.code === "ArrowRight" || event.code === "KeyD") {
+    event.preventDefault();
+    moveLane(-1);
   }
 });
 
@@ -203,7 +284,39 @@ window.addEventListener(
     if (event.target === jumpButton) {
       return;
     }
-    onPressInput();
+
+    touchStartX = event.clientX;
+    touchStartY = event.clientY;
+  },
+  { passive: false },
+);
+
+window.addEventListener(
+  "pointerup",
+  (event) => {
+    if (
+      event.target === jumpButton ||
+      touchStartX === null ||
+      touchStartY === null
+    ) {
+      touchStartX = null;
+      touchStartY = null;
+      return;
+    }
+
+    const deltaX = event.clientX - touchStartX;
+    const deltaY = event.clientY - touchStartY;
+    const absX = Math.abs(deltaX);
+    const absY = Math.abs(deltaY);
+
+    if (absX > SWIPE_THRESHOLD_PX && absX > absY) {
+      moveLane(deltaX > 0 ? -1 : 1);
+    } else {
+      onPressInput();
+    }
+
+    touchStartX = null;
+    touchStartY = null;
   },
   { passive: false },
 );
@@ -238,6 +351,20 @@ function update(delta) {
 
   for (const enemy of enemies) {
     enemy.position.z -= speed * delta;
+
+    const deltaXToPlayer = player.position.x - enemy.position.x;
+    const maxLateralStep = ENEMY_LATERAL_SPEED * delta;
+    const lateralStep = THREE.MathUtils.clamp(
+      deltaXToPlayer,
+      -maxLateralStep,
+      maxLateralStep,
+    );
+    enemy.position.x += lateralStep;
+    enemy.position.x = THREE.MathUtils.clamp(
+      enemy.position.x,
+      -ENEMY_LATERAL_LIMIT,
+      ENEMY_LATERAL_LIMIT,
+    );
   }
 
   while (segments.length > 0 && segments[0].end < -24) {
@@ -255,6 +382,12 @@ function update(delta) {
   }
 
   generateTrack();
+
+  player.position.x = THREE.MathUtils.lerp(
+    player.position.x,
+    LANE_OFFSETS[currentLane],
+    LANE_CHANGE_LERP,
+  );
 
   velocityY += GRAVITY * delta;
   player.position.y += velocityY * delta;
