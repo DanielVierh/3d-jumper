@@ -54,8 +54,10 @@ const TRACK_WIDTH = 7;
 const BASE_SPEED = 10;
 const GRAVITY = -30;
 const JUMP_VELOCITY = 12;
+const MAX_JUMPS = 2;
 
 let velocityY = 0;
+let jumpsUsed = 0;
 let distance = 0;
 let speed = BASE_SPEED;
 let gameOver = false;
@@ -126,7 +128,12 @@ function jump() {
 
   const onGround = Math.abs(player.position.y - 1.1) < 0.03;
   if (onGround) {
+    jumpsUsed = 0;
+  }
+
+  if (jumpsUsed < MAX_JUMPS) {
     velocityY = JUMP_VELOCITY;
+    jumpsUsed += 1;
   }
 }
 
@@ -135,6 +142,7 @@ function restart() {
   speed = BASE_SPEED;
   distance = 0;
   velocityY = 0;
+  jumpsUsed = 0;
   player.position.set(0, 1.1, 0);
   segmentCursor = -24;
   generatedUntil.z = 115;
@@ -242,6 +250,7 @@ function update(delta) {
   if (supported && player.position.y <= 1.1) {
     player.position.y = 1.1;
     velocityY = 0;
+    jumpsUsed = 0;
   }
 
   if (!supported && player.position.y <= -3.2) {
