@@ -64,10 +64,13 @@ const BASE_SPEED = 10;
 const GRAVITY = -30;
 const JUMP_VELOCITY = 12;
 const MAX_JUMPS = 2;
+const STOMP_BOUNCE_FACTOR = 0.85;
+const ENEMY_STOMP_POINTS = 100;
 
 let velocityY = 0;
 let jumpsUsed = 0;
 let distance = 0;
+let score = 0;
 let speed = BASE_SPEED;
 let gameOver = false;
 let segmentCursor = -24;
@@ -150,6 +153,7 @@ function restart() {
   gameOver = false;
   speed = BASE_SPEED;
   distance = 0;
+  score = 0;
   velocityY = 0;
   jumpsUsed = 0;
   player.position.set(0, 1.1, 0);
@@ -268,18 +272,36 @@ function update(delta) {
   }
 
   playerBox.setFromObject(player);
-  for (const enemy of enemies) {
+  for (let i = enemies.length - 1; i >= 0; i -= 1) {
+    const enemy = enemies[i];
     enemyBox.setFromObject(enemy);
     const overlaps = playerBox.intersectsBox(enemyBox);
+    if (!overlaps) {
+      continue;
+    }
+
+    const stompedEnemy =
+      velocityY < 0 && playerBox.min.y >= enemyBox.max.y - 0.25;
+
+    if (stompedEnemy) {
+      score += ENEMY_STOMP_POINTS;
+      velocityY = JUMP_VELOCITY * STOMP_BOUNCE_FACTOR;
+      jumpsUsed = 1;
+      world.remove(enemy);
+      enemy.geometry.dispose();
+      enemies.splice(i, 1);
+      continue;
+    }
+
     const isLow = player.position.y < 2.35;
-    if (overlaps && isLow) {
+    if (isLow) {
       gameOver = true;
       stateEl.textContent = "Von Gegner getroffen! Tippen/Leertaste = Neustart";
       break;
     }
   }
 
-  distanceEl.textContent = `Distanz: ${Math.floor(distance)} m`;
+  distanceEl.textContent = `Distanz: ${Math.floor(distance)} m | Punkte: ${score}`;
 
   camera.position.z = -10.5;
   camera.position.y = THREE.MathUtils.lerp(
