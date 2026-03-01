@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x87b4ff);
@@ -45,12 +46,150 @@ scene.add(world);
 
 const groundMaterial = new THREE.MeshStandardMaterial({ color: 0x264878 });
 const enemyMaterial = new THREE.MeshStandardMaterial({ color: 0xff5f5f });
-const playerMaterial = new THREE.MeshStandardMaterial({ color: 0x34e38d });
+const playerMaterial = new THREE.MeshStandardMaterial({ color: 0x5f9fff });
 
 const player = new THREE.Mesh(new THREE.BoxGeometry(1, 1.6, 1), playerMaterial);
 player.castShadow = true;
 player.position.set(0, 1.1, 0);
 scene.add(player);
+
+const PLAYER_MODEL_URLS = [
+  "/models/player.glb",
+  "/models/Player.glb",
+  "/models/character.glb",
+  "/models/Character.glb",
+];
+const PLAYER_MODEL_SCALE = 0.95;
+const PLAYER_MODEL_Y_OFFSET = -0.8;
+
+const playerVisualRoot = new THREE.Group();
+playerVisualRoot.position.set(0, PLAYER_MODEL_Y_OFFSET, 0);
+player.add(playerVisualRoot);
+
+let playerMixer = null;
+let activePlayerAction = null;
+let playerModelStatus = "lädt Modell...";
+const playerActions = {
+  idle: null,
+  run: null,
+  jump: null,
+  death: null,
+};
+
+function updateIdleStateText() {
+  if (gameOver) {
+    return;
+  }
+
+  stateEl.textContent = `Leertaste/Touch springen, A/D oder Swipe ausweichen (${playerModelStatus})`;
+}
+
+function findAnimationAction(clips, mixer, aliases) {
+  const clip = clips.find((entry) => {
+    const clipName = entry.name.toLowerCase();
+    return aliases.some((alias) => clipName.includes(alias));
+  });
+
+  return clip ? mixer.clipAction(clip) : null;
+}
+
+function setPlayerAnimation(nextAction) {
+  if (!nextAction || nextAction === activePlayerAction) {
+    return;
+  }
+
+  if (activePlayerAction) {
+    activePlayerAction.fadeOut(0.12);
+  }
+
+  nextAction.reset().fadeIn(0.12).play();
+  activePlayerAction = nextAction;
+}
+
+function updatePlayerAnimationState({ gameOverState, grounded }) {
+  if (!playerMixer) {
+    return;
+  }
+
+  if (gameOverState) {
+    setPlayerAnimation(
+      playerActions.death || playerActions.idle || playerActions.run,
+    );
+    return;
+  }
+
+  if (!grounded || Math.abs(velocityY) > 0.8) {
+    setPlayerAnimation(
+      playerActions.jump || playerActions.run || playerActions.idle,
+    );
+    return;
+  }
+
+  setPlayerAnimation(playerActions.run || playerActions.idle);
+}
+
+const gltfLoader = new GLTFLoader();
+
+function applyLoadedPlayerModel(gltf) {
+  const model = gltf.scene;
+  model.scale.setScalar(PLAYER_MODEL_SCALE);
+  model.traverse((node) => {
+    if (!node.isMesh) {
+      return;
+    }
+
+    node.castShadow = true;
+    node.receiveShadow = true;
+  });
+
+  playerVisualRoot.add(model);
+
+  playerMaterial.transparent = true;
+  playerMaterial.opacity = 0;
+  playerMaterial.depthWrite = false;
+
+  playerMixer = new THREE.AnimationMixer(model);
+  const clips = gltf.animations ?? [];
+
+  playerActions.idle = findAnimationAction(clips, playerMixer, ["idle"]);
+  playerActions.run = findAnimationAction(clips, playerMixer, ["run", "walk"]);
+  playerActions.jump = findAnimationAction(clips, playerMixer, ["jump"]);
+  playerActions.death = findAnimationAction(clips, playerMixer, [
+    "death",
+    "die",
+    "hit",
+    "defeat",
+  ]);
+
+  setPlayerAnimation(playerActions.run || playerActions.idle);
+}
+
+function tryLoadPlayerModel(modelUrls, index = 0) {
+  if (index >= modelUrls.length) {
+    playerModelStatus = "Fallback-Figur aktiv";
+    updateIdleStateText();
+    console.info(
+      "Kein GLB-Player gefunden. Lege z. B. /public/models/player.glb an.",
+    );
+    return;
+  }
+
+  const modelUrl = modelUrls[index];
+  gltfLoader.load(
+    modelUrl,
+    (gltf) => {
+      applyLoadedPlayerModel(gltf);
+      playerModelStatus = "3D-Figur aktiv";
+      updateIdleStateText();
+    },
+    undefined,
+    () => {
+      tryLoadPlayerModel(modelUrls, index + 1);
+    },
+  );
+}
+
+tryLoadPlayerModel(PLAYER_MODEL_URLS);
 
 const playerBox = new THREE.Box3();
 const enemyBox = new THREE.Box3();
@@ -247,7 +386,7 @@ function restart() {
     createSegment(z, false);
   }
 
-  stateEl.textContent = "Leertaste/Touch springen, A/D oder Swipe ausweichen";
+  updateIdleStateText();
 }
 
 function onPressInput() {
@@ -330,7 +469,12 @@ window.addEventListener("resize", () => {
 const clock = new THREE.Clock();
 
 function update(delta) {
+  if (playerMixer) {
+    playerMixer.update(delta);
+  }
+
   if (gameOver) {
+    updatePlayerAnimationState({ gameOverState: true, grounded: false });
     return;
   }
 
@@ -399,9 +543,12 @@ function update(delta) {
     jumpsUsed = 0;
   }
 
+  const grounded = supported && Math.abs(player.position.y - 1.1) < 0.03;
+
   if (!supported && player.position.y <= -3.2) {
     gameOver = true;
     stateEl.textContent = "In die Klippe gefallen! Tippen/Leertaste = Neustart";
+    updatePlayerAnimationState({ gameOverState: true, grounded: false });
   }
 
   playerBox.setFromObject(player);
@@ -430,8 +577,13 @@ function update(delta) {
     if (isLow) {
       gameOver = true;
       stateEl.textContent = "Von Gegner getroffen! Tippen/Leertaste = Neustart";
+      updatePlayerAnimationState({ gameOverState: true, grounded: false });
       break;
     }
+  }
+
+  if (!gameOver) {
+    updatePlayerAnimationState({ gameOverState: false, grounded });
   }
 
   distanceEl.textContent = `Distanz: ${Math.floor(distance)} m | Punkte: ${score}`;
